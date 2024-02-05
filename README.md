@@ -1,0 +1,1 @@
+# Code for "Spatial disaggregation of asset type for hazard risk assessment using a Hopfield Neural Network"
