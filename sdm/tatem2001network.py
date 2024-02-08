@@ -1,149 +1,170 @@
-from graph import Graph, Grid
-from neigbours import NeighboursTraverser
+#%%
+from sdm.graph import Graph, Grid
 from scipy import sparse
 import numpy as np
 import seaborn as sns
 import matplotlib.pyplot as plt
 import pandas as pd
-from PIL import Image
-import csv
+from sdm.utils import compute_metrics, get_proportions
+
 
 np.set_printoptions(threshold=np.inf, linewidth=200, precision=2, suppress=True)
 
 class HopfieldNetwork:
-    def __init__(self, graph: Graph):
+    def __init__(self, args, graph: Graph, proportion_targets = None, labels = None):
+        self.args = args
         self.graph = graph
-        self.energy = None
-        self.proportion_targets = None
+        self.initial = self.graph.vertices
+        self.labels = labels
 
-    def predict(self, iterations, weights, stopping_threshold, g1_lamda=1, g2_lamda=1, ap_lamda=1,
-                proportion_targets=None, plot=True, print_values=False, log_file=None,
-                plot_print_and_log_after=1, plots_dir=None):
-
-        # useful for plotting
-        if isinstance(self.graph, Grid):
-            dim = self.graph.dim
-        
         if proportion_targets is not None:
             self.proportion_targets = proportion_targets
         elif self.proportion_targets is None:
             self.set_proportion_targets()
 
-        # plot, print, and log network parameters and targets.
-        if plot:
-            self.plot(iteration='Target', plots_dir=plots_dir)
+        self.energy = None
 
-        if print_values:
-            print("\niterations:", iterations)
-            print("\nlamdas:", g1_lamda, g2_lamda, ap_lamda)
-            print("\nweights:", weights)
-            print("\ntarget vertices:\n", self.graph.vertices.reshape(dim, dim) if isinstance(self.graph, Grid) else self.graph.vertices)
-            print("\ntarget area proportions:\n", self.proportion_targets)
-            print("\nareas:\n", self.graph.areas.reshape(dim, dim) if isinstance(self.graph, Grid) else self.graph.areas)
+        # if self.args.use_wandb:
+        #     wandb.init(project=self.args.wandb_project, name=self.args.run_name)
 
+
+    def evaluation_step(self):
+            predictions = (self.graph.vertices >= 0.5).astype(int)
+
+            return compute_metrics(labels=self.labels, 
+                                   predictions=predictions, 
+                                   proportion_targets=self.proportion_targets, 
+                                   proportions = get_proportions(
+                                        predictions=predictions,
+                                        areas=self.graph.areas),
+                                   classification_metrics=self.args.classification_metrics, 
+                                   proportion_metrics=self.args.proportion_metrics, 
+                                   unupdatable=self.graph.unupdatable)
+
+    def prediction_step(self, columns, multipliers, counts):
+        g1_derivative = self.get_g1_derivative(columns, multipliers, counts, self.args.lamdas[0])
+        g2_derivative = self.get_g2_derivative(columns, multipliers, counts, self.args.lamdas[1])
+
+        derivatives = self.get_proportions_tanh(self.args.lamdas[2]) - self.proportion_targets
+        area_proportion_derivative = np.zeros_like(self.graph.vertices)
+        for area in range(1, derivatives.shape[0] + 1):
+            area_proportion_derivative[self.graph.areas == area] = derivatives[area-1]
+
+        # energy_derivative = weights.dot(np.vstack((g1_derivative, g2_derivative, area_proportion_derivative)))
+        energy_derivative = np.nansum(np.multiply(self.args.weights.reshape(-1, 1), np.vstack((g1_derivative, g2_derivative, area_proportion_derivative))), axis = 0)
+
+        self.graph.vertices[~self.graph.unupdatable] -= energy_derivative[~self.graph.unupdatable]
+
+        return np.sum(np.abs(energy_derivative))
+
+    def predict(self):
             
-        if log_file:
-            self.log_to_file(log_file,
-                             iterations=[iterations],
-                             lamdas=[g1_lamda, g2_lamda, ap_lamda],
-                             iteration=["target"],
-                             target_vertices=self.graph.vertices.reshape(dim, dim) if
-                             isinstance(self.graph, Grid) else self.graph.vertices,
-                             target_area_proportions=self.proportion_targets,
-                             areas=self.graph.areas.reshape(dim, dim) if
-                             isinstance(self.graph, Grid) else self.graph.areas,
-                             weights=weights,
-                             )
-
-        columns, multipliers, counts = self.calc_col_mult_count()
-
-        # random respecting area proportions
-        self.graph.vertices = self.graph.vertices.astype('float64')
-        areas, area_counts = np.unique(self.graph.areas[self.graph.unupdatable != True], return_counts=True)
-        for area in areas:
-            highs = np.rint(self.proportion_targets[area - 1] * area_counts[area - 1])
-            lows = area_counts[area - 1] - highs
-            self.graph.vertices[(self.graph.unupdatable != True) & (self.graph.areas == area)]= np.random.permutation(np.repeat([0.55, 0.45], [highs, lows]))
+        columns, multipliers, counts = self.get_col_mult_count()
 
         # Iterations
-        for iteration in range(iterations):
+        for iteration in range(self.args.n_iter):
 
-            g1_derivative = self.calc_g1_derivative(columns, multipliers, counts, g1_lamda, log_file)
-            g2_derivative = self.calc_g2_derivative(columns, multipliers, counts, g2_lamda, log_file)
+            delta_energy = self.prediction_step(columns, multipliers, counts)
 
-            derivatives = self.calc_area_proportions(ap_lamda) - self.proportion_targets
-            area_proportion_derivative = np.zeros_like(self.graph.vertices)
-            for area in range(1, derivatives.shape[0] + 1):
-                area_proportion_derivative[self.graph.areas == area] = derivatives[area-1]
-
-            # energy_derivative = weights.dot(np.vstack((g1_derivative, g2_derivative, area_proportion_derivative)))
-            energy_derivative = np.nansum(np.multiply(weights.reshape(-1, 1), np.vstack((g1_derivative, g2_derivative, area_proportion_derivative))), axis = 0)
-
-            # plot, print, and log iterations
-            if iteration % plot_print_and_log_after == 0:
-                if plot:
-                    self.plot(iteration=iteration , plots_dir=plots_dir)
-
-                if print_values:
-                    print("\niteration:", iteration)
-                    print("\nvertices:\n", self.graph.vertices.reshape(dim, dim) if isinstance(self.graph, Grid) else self.graph.vertices)
-                    print("\nmean_vih:\n", self.calc_mean_vih(columns, multipliers, counts).reshape(dim, dim)
-                    if isinstance(self.graph, Grid) else self.calc_mean_vih(columns, multipliers, counts))
-                    print("\ng1 derivative:\n", g1_derivative.reshape(dim, dim) if isinstance(self.graph, Grid) else g1_derivative)
-                    print("\ng2 derivative:\n", g2_derivative.reshape(dim, dim) if isinstance(self.graph, Grid) else g2_derivative)
-                    print("\narea proportions:\n", self.calc_area_proportions(ap_lamda))
-                    print("\narea proportion derivative:\n", area_proportion_derivative.reshape(dim, dim) if isinstance(self.graph, Grid) else area_proportion_derivative)
-                    print("\nenergy derivative:\n", energy_derivative.reshape(dim, dim) if isinstance(self.graph, Grid) else energy_derivative)
-
-                # Logging
-                if log_file:
-                    self.log_to_file(log_file,
-                                     iteration=[iteration],
-                                     vertices=self.graph.vertices.reshape(dim, dim) if
-                                     isinstance(self.graph, Grid) else self.graph.vertices,
-                                     g1_derivative=g1_derivative.reshape(dim, dim),
-                                     g2_derivative=g2_derivative.reshape(dim, dim),
-                                     area_proportions=self.calc_area_proportions(ap_lamda),
-                                     area_proportion_derivative=area_proportion_derivative.reshape(
-                                         dim, dim)
-                                     if isinstance(self.graph, Grid) else area_proportion_derivative,
-                                     energy_derivative=energy_derivative.reshape(
-                                         dim, dim)
-                                     if isinstance(self.graph, Grid) else energy_derivative,
-                                     )
-
-            if np.sum(np.abs(energy_derivative)) < stopping_threshold:
+            if delta_energy < self.args.stopping_threshold:
                 # print(energy_derivative)
                 print(f"converged after {iteration} iterations")
                 break
 
-            self.graph.vertices[self.graph.unupdatable != True] -= energy_derivative[self.graph.unupdatable != True]
-
-            # self.graph.vertices = np.where((self.graph.vertices + energy_derivative >= 0) &
-            #                                (self.graph.vertices + energy_derivative <= 1),
-            #                                self.graph.vertices + energy_derivative,
-            #                                self.graph.vertices)
-
-        # plot, print, and log final result
         self.graph.vertices = (self.graph.vertices >= 0.5).astype(int)
+        
+        return self.evaluation_step()
+            
+        
 
-        if plot:
-            self.plot(iteration='Result'  , plots_dir=plots_dir)
+        # # useful for plotting
+        # if isinstance(self.graph, Grid):
+        #     dim = self.graph.dim
 
-        if print_values:
-            print("\niteration:", "result")
-            print("\nvertices:\n", self.graph.vertices.reshape(dim, dim) if isinstance(self.graph, Grid) else self.graph.vertices)
-            print("\narea_proportions:\n", self.calc_area_proportions(ap_lamda))
+        # # plot, print, and log network parameters and targets.
+        # if self.args.plot:
+        #     self.plot(iteration='Target', plots_dir=self.args.plots_dir)
 
-        if log_file:
-            self.log_to_file(log_file,
-                             iteration=["result"],
-                             vertices=self.graph.vertices.reshape(dim, dim) if
-                             isinstance(self.graph, Grid) else self.graph.vertices,
-                             area_proportions = self.calc_area_proportions(ap_lamda)
-                             )
+        # if self.args.print_values:
+        #     print("\niterations:", self.args.n_iter)
+        #     print("\nlamdas:", self.args.lamdas[0], self.args.lamdas[1], self.args.lamdas[2])
+        #     print("\nweights:", self.args.weights)
+        #     print("\ntarget vertices:\n", self.graph.vertices.reshape(dim, dim) if isinstance(self.graph, Grid) else self.graph.vertices)
+        #     print("\ntarget area proportions:\n", self.proportion_targets)
+        #     print("\nareas:\n", self.graph.areas.reshape(dim, dim) if isinstance(self.graph, Grid) else self.graph.areas)
 
-    def log_to_file(self, log_file, **kwargs):
+            
+        # if self.args.log_file:
+        #     self.log_to_file(self.args.log_file,
+        #                      iterations=[self.args.n_iter],
+        #                      lamdas=[self.args.lamdas[0], self.args.lamdas[1], self.args.lamdas[2]],
+        #                      iteration=["target"],
+        #                      target_vertices=self.graph.vertices.reshape(dim, dim) if
+        #                      isinstance(self.graph, Grid) else self.graph.vertices,
+        #                      target_area_proportions=self.proportion_targets,
+        #                      areas=self.graph.areas.reshape(dim, dim) if
+        #                      isinstance(self.graph, Grid) else self.graph.areas,
+        #                      weights=self.args.weights,
+        #                      )
+
+
+        
+
+            # # plot, print, and log iterations
+            # if iteration % self.args.plot_print_and_log_after == 0:
+            #     if self.args.plot:
+            #         self.plot(iteration=iteration , plots_dir=self.args.plots_dir)
+
+            #     if self.args.print_values:
+            #         print("\niteration:", iteration)
+            #         print("\nvertices:\n", self.graph.vertices.reshape(dim, dim) if isinstance(self.graph, Grid) else self.graph.vertices)
+            #         print("\nmean_vih:\n", self.calc_mean_vih(columns, multipliers, counts).reshape(dim, dim)
+            #         if isinstance(self.graph, Grid) else self.calc_mean_vih(columns, multipliers, counts))
+            #         print("\ng1 derivative:\n", g1_derivative.reshape(dim, dim) if isinstance(self.graph, Grid) else g1_derivative)
+            #         print("\ng2 derivative:\n", g2_derivative.reshape(dim, dim) if isinstance(self.graph, Grid) else g2_derivative)
+            #         print("\narea proportions:\n", self.calc_area_proportions(self.args.lamdas[2]))
+            #         print("\narea proportion derivative:\n", area_proportion_derivative.reshape(dim, dim) if isinstance(self.graph, Grid) else area_proportion_derivative)
+            #         print("\nenergy derivative:\n", energy_derivative.reshape(dim, dim) if isinstance(self.graph, Grid) else energy_derivative)
+
+            #     # Logging
+            #     if self.args.log_file:
+            #         self.log_to_file(self.args.log_file,
+            #                          iteration=[iteration],
+            #                          vertices=self.graph.vertices.reshape(dim, dim) if
+            #                          isinstance(self.graph, Grid) else self.graph.vertices,
+            #                          g1_derivative=g1_derivative.reshape(dim, dim),
+            #                          g2_derivative=g2_derivative.reshape(dim, dim),
+            #                          area_proportions=self.calc_area_proportions(self.args.lamdas[2]),
+            #                          area_proportion_derivative=area_proportion_derivative.reshape(
+            #                              dim, dim)
+            #                          if isinstance(self.graph, Grid) else area_proportion_derivative,
+            #                          energy_derivative=energy_derivative.reshape(
+            #                              dim, dim)
+            #                          if isinstance(self.graph, Grid) else energy_derivative,
+            #                          )
+
+
+        # # plot, print, and log final result
+
+        # if self.args.plot:
+        #     self.plot(iteration='Result'  , plots_dir=self.args.plots_dir)
+
+        # if self.args.print_values:
+        #     print("\niteration:", "result")
+        #     print("\nvertices:\n", self.graph.vertices.reshape(dim, dim) if isinstance(self.graph, Grid) else self.graph.vertices)
+        #     print("\narea_proportions:\n", self.calc_area_proportions(self.args.lamdas[2]))
+
+        # if self.args.log_file:
+        #     self.log_to_file(self.args.log_file,
+        #                      iteration=["result"],
+        #                      vertices=self.graph.vertices.reshape(dim, dim) if
+        #                      isinstance(self.graph, Grid) else self.graph.vertices,
+        #                      area_proportions = self.calc_area_proportions(self.args.lamdas[2])
+        #                      )
+
+    def log_to_file(self, log_file, **kwargs): 
+        #rewrite to match results with additional columns for keys that have a value for each vertex, 
+        # the remaining keys being stored in a config file along with self.args
         for key, value in kwargs.items():
             pd.DataFrame(['', key]).to_csv(log_file, mode='a', header=False, index=False)
             pd.DataFrame(value).to_csv(log_file, mode='a', header=False, index=False, na_rep='nan')
@@ -158,38 +179,41 @@ class HopfieldNetwork:
                         cmap='Greys', cbar=True, vmax=1, vmin=0)
             plt.show()
         else:
-            if plots_dir is None:
-                pd.DataFrame(np.vstack((self.graph.vertices.reshape(1, -1), self.graph.coordinates.T)).T).to_csv(f'iteration: {iteration}.csv')
-            else:
-                pd.DataFrame(np.vstack((self.graph.vertices.reshape(1, -1), self.graph.coordinates.T)).T).to_csv(f'{plots_dir}/iteration: {iteration}.csv')
-
+            raise NotImplementedError("Plotting for graphs is not implemeted. \
+                                      Please use log_to_file instead and use GIS software to plot the results")
+            # if plots_dir is None:
+            #     pd.DataFrame(np.vstack((self.graph.vertices.reshape(1, -1), self.graph.coordinates.T)).T).to_csv(f'iteration: {iteration}.csv')
+            # else:
+            #     pd.DataFrame(np.vstack((self.graph.vertices.reshape(1, -1), self.graph.coordinates.T)).T).to_csv(f'{plots_dir}/iteration: {iteration}.csv')
 
     def set_proportion_targets(self):
-        num_areas = np.amax(self.graph.areas)
-        self.proportion_targets = np.zeros(shape=num_areas)
-        for x in range(1, num_areas + 1):
-            self.proportion_targets[x - 1] = np.mean(self.graph.vertices[self.graph.areas == x])
+        predictions = (self.graph.vertices >= 0.5).astype(int)
 
-    def calc_area_proportions(self, lamda):
+        self.proportion_targets = get_proportions(
+            predictions=predictions,
+            areas=self.graph.areas
+        )
+
+    def get_proportions_tanh(self, lamda):
         num_areas = np.amax(self.graph.areas)
         area_proportions = np.zeros(shape=num_areas)
         for x in range(1, num_areas + 1):
             area_proportions[x - 1] = 0.5 * np.mean(1 + np.tanh((self.graph.vertices[self.graph.areas == x] - 0.5) * lamda))
         return area_proportions
 
-    def calc_g1_derivative(self, columns, multipliers, counts, lamda, log_file=None):
-        mean_vih = self.calc_mean_vih(columns, multipliers, counts)
+    def get_g1_derivative(self, columns, multipliers, counts, lamda):
+        mean_vih = self.get_mean_vih(columns, multipliers, counts)
         # double check
         g1_derivative = 0.5 * (1 + np.tanh((mean_vih - 0.5) * lamda)) * (self.graph.vertices - 1)
         return g1_derivative
 
-    def calc_g2_derivative(self, columns, multipliers, counts, lamda, log_file=None):
-        mean_vih = self.calc_mean_vih(columns, multipliers, counts)
+    def get_g2_derivative(self, columns, multipliers, counts, lamda):
+        mean_vih = self.get_mean_vih(columns, multipliers, counts)
         # double check
         g2_derivative = 0.5 * (1 - np.tanh((mean_vih - 0.5) * lamda)) * self.graph.vertices
         return g2_derivative
 
-    def calc_col_mult_count(self):
+    def get_col_mult_count(self):
         rows, columns = np.nonzero(self.graph.edges == 1)
         counts = np.zeros_like(self.graph.vertices)
         unique, c = np.unique(rows, return_counts=True)
@@ -200,8 +224,10 @@ class HopfieldNetwork:
 
         return columns, multipliers, counts
 
-    def calc_mean_vih(self, columns, multipliers, counts):
+    def get_mean_vih(self, columns, multipliers, counts):
         mean_vih = sparse.csr_matrix.dot(self.graph.vertices[columns],
                                               multipliers) / counts
         return np.array(mean_vih)
 
+
+# %%

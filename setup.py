@@ -1,6 +1,6 @@
 from setuptools import setup, find_packages
 
 setup(
-    name='src',
+    name='sdm',
     packages=find_packages()
 )

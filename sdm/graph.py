@@ -1,7 +1,6 @@
 from numpy import ndarray, array
 from scipy.sparse import lil_matrix
-from neigbours import delaunay, chebyshev
-
+from sdm.neighbours import delaunay, chebyshev
 def calc_areas(dim, zoom_factor):
     if not dim % zoom_factor == 0:
         raise ValueError(f"zoom_factor must be a factor of Grid dimension, received zoom_factor: {zoom_factor}")
