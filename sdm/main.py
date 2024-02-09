@@ -7,6 +7,7 @@ from sdm.graph import Graph
 from sdm.tatem2001network import HopfieldNetwork
 from sdm.utils import AdaptiveRepeatedKFold, total_proportion, like_proportions, compute_metrics, get_proportions
 from typing import Sequence
+import cProfile, pstats
 
 # %%
 POINTS_DATA_PATH = "data/lancaster/processed/points_data.csv"
@@ -31,6 +32,7 @@ class RunArgs():
         use_hnn (bool): Flag indicating whether to use the HNN (Hierarchical Neural Network) model.
     """        
     run_name : str
+    project_name : str = 'sdm'
     input_data_paths = [POINTS_DATA_PATH, PROPORTIONS_DATA_PATH]
     initialisation : str = 'like_proportions'
     n_runs : int = 100
@@ -55,12 +57,15 @@ class HNNArgs(RunArgs):
     use_hnn : bool = True
     initial_high_val : int = 0.55
     initial_low_val : int = 0.45
-    n_iter : int = 500
+    n_iter : int = 100
     train_prop: float = 0.0
     cross_validation: bool = False
     weights : np.array = np.array([0.05, 0.05, 1])
     lamdas : np.array = np.array([10, 10, 10])
     stopping_threshold : float = 0.0
+    log_to_wandb : bool = False
+    log_after : int = 10
+
 
 
 
@@ -111,41 +116,38 @@ def run(points_data : pd.DataFrame, proportions_data: pd.DataFrame, args):
         else:
             raise NotImplementedError(f"{args.initialisation} is not an implemented initialisation method")      
 
-    def run_hnn(i: int):
+    def run_hnn(graph, i: int):
         """
-        Runs the Hopfield Neural Network (HNN) for a given iteration.
+        Runs the Hopfield Neural Network (HNN) algorithm on the given graph.
 
         Args:
-            i (int): The iteration number.
+            graph: The graph object representing the neural network.
+            i (int): The index of the current iteration.
 
         Returns:
-            None
+            The updated graph object after running the HNN algorithm.
         """
         initial = initialise(high_val=args.initial_high_val, low_val=args.initial_low_val)
         initial = np.where(np.isnan(points_data[f'train_{i + 1}']), initial, points_data[f'train_{i + 1}'])
 
         points_data[f'initial_{i+1}'] = initial
 
+        # inplace reset of graph attributes instead of creating a new graph object to avoid computing delaunay triangulation again
+        graph.reset(vertices=initial, unupdatable=points_data[f'train_{i + 1}'].notna().to_numpy())
+
+        # create new HNN object for each iteration
         hnn = HopfieldNetwork(
             args=args,
-            graph=Graph(
-                vertices=initial,
-                unupdatable=points_data[f'train_{i + 1}'].notna().to_numpy(),
-                coordinates=points_data[["latitude", "longitude"]].to_numpy(),
-                areas=points_data["area_num"].to_numpy(dtype=int),
-            ),
+            graph=graph,
             proportion_targets=proportions_data["ones_proportion"].to_numpy(),
             labels=points_data['label'].to_numpy(),
         )
 
-        classification_scores, proportion_scores = hnn.predict()
+        (classification_scores, proportion_scores) = hnn.predict()
+        multirun_classification_and_proportion_scores.append((classification_scores, proportion_scores))
 
         # inplace update of points_data
         points_data[f'predicted_{i+1}'] = hnn.graph.vertices
-
-        return classification_scores, proportion_scores
-
-
 
     # Main function body
     if isinstance(args, HNNArgs):
@@ -153,37 +155,43 @@ def run(points_data : pd.DataFrame, proportions_data: pd.DataFrame, args):
     else:
         assert not args.use_hnn, "args must be an instance of HNNArg where args.use_hnn is true"
 
+    # if args.hnn is True, multirun_classification_and_proportion_scores will be populated inside the run_hnn closure
     multirun_classification_and_proportion_scores = []
 
     if args.use_hnn:
 
-        labels_nonan = points_data[["point_id", "label"]].dropna()
+        # create graph
+        graph=Graph(
+                vertices=np.zeros_like(points_data['label'].to_numpy()),
+                coordinates=points_data[["latitude", "longitude"]].to_numpy(),
+                areas=points_data["area_num"].to_numpy(dtype=int),
+            )
+
+        labels_df_nonan = points_data[["point_id", "label"]].dropna()
 
         if args.cross_validation:
 
             arkfold = AdaptiveRepeatedKFold(args.n_runs, args.train_prop)
 
-            for i, split in enumerate(arkfold.split(labels_nonan["label"].to_numpy())):
+            for i, split in enumerate(arkfold.split(labels_df_nonan["label"].to_numpy())):
                 
-                points_data = points_data.merge(labels_nonan.iloc[split[0]]
+                points_data = points_data.merge(labels_df_nonan.iloc[split[0]]
                                 .rename(columns={'label':f'train_{i+1}'})
                                     , on='point_id', how='left')
                 
-                # run HNN updated points_data in place to prevent repeating code
-                (classification_scores, proportion_scores) = run_hnn(i=i)
-                multirun_classification_and_proportion_scores.append((classification_scores, proportion_scores))
+                # run HNN updates points_data in place to prevent repeating code
+                run_hnn(graph=graph, i=i)
 
         else:
             for i in range(args.n_runs):
 
-                points_data = points_data.merge(labels_nonan
+                points_data = points_data.merge(labels_df_nonan
                                 .sample(frac=args.train_prop)
                                 .rename(columns={"label":f"train_{i+1}"})
                                 , on='point_id', how='left')
                 
-                # run HNN updated points_data in place to prevent repeating code
-                (classification_scores, proportion_scores) = run_hnn(i=i)
-                multirun_classification_and_proportion_scores.append((classification_scores, proportion_scores))
+                # run HNN updates points_data in place to prevent repeating code
+                run_hnn(graph=graph, i=i)
     else:
         for i in range(args.n_runs):
             predictions = initialise(high_val=1, low_val=0)
@@ -202,10 +210,18 @@ def run(points_data : pd.DataFrame, proportions_data: pd.DataFrame, args):
     return points_data, multirun_classification_and_proportion_scores
 
 #%%
-args = HNNArgs(run_name='example_run', n_runs=1, use_hnn=True, n_iter=500, train_prop=0, cross_validation=False)
+args = HNNArgs(run_name='example_run', n_runs=2, use_hnn=True, n_iter=200, train_prop=0.2, cross_validation=False, log_to_wandb=True)
+
+# profiler = cProfile.Profile()
+# profiler.enable()
 
 results, multirun_classification_and_proportion_scores = run(points_data=points_data, proportions_data=proportions_data, args=args)
-results
+
+# profiler.disable()
+# profiler.print_stats(sort='cumtime')
+
+
+# results
 #%%
 output_path = OUTPUT_DIR + args.run_name
 os.makedirs(output_path)

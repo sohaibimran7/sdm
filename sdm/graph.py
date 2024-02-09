@@ -23,6 +23,10 @@ class Graph:
         self.unupdatable = unupdatable
         self.edges = delaunay(lil_matrix((vertices.shape[0], vertices.shape[0])),
                               coordinates) if edges is None else edges
+    
+    def reset(self, **kwargs):
+        for k, v in kwargs.items():
+            setattr(self, k, v)
 
 
 class Grid(Graph):

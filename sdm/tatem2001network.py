@@ -6,6 +6,7 @@ import seaborn as sns
 import matplotlib.pyplot as plt
 import pandas as pd
 from sdm.utils import compute_metrics, get_proportions
+import wandb
 
 
 np.set_printoptions(threshold=np.inf, linewidth=200, precision=2, suppress=True)
@@ -14,7 +15,7 @@ class HopfieldNetwork:
     def __init__(self, args, graph: Graph, proportion_targets = None, labels = None):
         self.args = args
         self.graph = graph
-        self.initial = self.graph.vertices
+        self.initial_vertices = self.graph.vertices
         self.labels = labels
 
         if proportion_targets is not None:
@@ -22,24 +23,29 @@ class HopfieldNetwork:
         elif self.proportion_targets is None:
             self.set_proportion_targets()
 
-        self.energy = None
+        if self.args.log_to_wandb:
+            wandb.init(project=self.args.project_name, name=self.args.run_name)
 
-        # if self.args.use_wandb:
-        #     wandb.init(project=self.args.wandb_project, name=self.args.run_name)
-
-
-    def evaluation_step(self):
+    def evaluation_step(self, iteration):
             predictions = (self.graph.vertices >= 0.5).astype(int)
 
-            return compute_metrics(labels=self.labels, 
-                                   predictions=predictions, 
-                                   proportion_targets=self.proportion_targets, 
-                                   proportions = get_proportions(
-                                        predictions=predictions,
-                                        areas=self.graph.areas),
-                                   classification_metrics=self.args.classification_metrics, 
-                                   proportion_metrics=self.args.proportion_metrics, 
-                                   unupdatable=self.graph.unupdatable)
+            (classification_scores, proportion_scores) = compute_metrics(labels=self.labels, 
+                                                                         predictions=predictions, 
+                                                                         proportion_targets=self.proportion_targets, 
+                                                                         proportions = get_proportions(
+                                                                            predictions=predictions, 
+                                                                            areas=self.graph.areas),
+                                                                         classification_metrics=self.args.classification_metrics, 
+                                                                         proportion_metrics=self.args.proportion_metrics, 
+                                                                         unupdatable=self.graph.unupdatable)
+            
+            if self.args.log_to_wandb:
+
+                wandb.log(classification_scores, step=iteration)
+                wandb.log(proportion_scores, step=iteration)
+
+            return classification_scores, proportion_scores
+    
 
     def prediction_step(self, columns, multipliers, counts):
         g1_derivative = self.get_g1_derivative(columns, multipliers, counts, self.args.lamdas[0])
@@ -53,7 +59,10 @@ class HopfieldNetwork:
         # energy_derivative = weights.dot(np.vstack((g1_derivative, g2_derivative, area_proportion_derivative)))
         energy_derivative = np.nansum(np.multiply(self.args.weights.reshape(-1, 1), np.vstack((g1_derivative, g2_derivative, area_proportion_derivative))), axis = 0)
 
-        self.graph.vertices[~self.graph.unupdatable] -= energy_derivative[~self.graph.unupdatable]
+        if self.graph.unupdatable is not None:
+            self.graph.vertices[~self.graph.unupdatable] -= energy_derivative[~self.graph.unupdatable]
+        else:
+            self.graph.vertices -= energy_derivative
 
         return np.sum(np.abs(energy_derivative))
 
@@ -64,6 +73,9 @@ class HopfieldNetwork:
         # Iterations
         for iteration in range(self.args.n_iter):
 
+            if self.args.log_to_wandb and (iteration % self.args.log_after == 0):
+                self.evaluation_step(iteration=iteration)
+
             delta_energy = self.prediction_step(columns, multipliers, counts)
 
             if delta_energy < self.args.stopping_threshold:
@@ -72,119 +84,25 @@ class HopfieldNetwork:
                 break
 
         self.graph.vertices = (self.graph.vertices >= 0.5).astype(int)
+
+        (classification_scores, proportion_scores) = self.evaluation_step(iteration=iteration)
+
+        if self.args.log_to_wandb:  wandb.finish()
         
-        return self.evaluation_step()
-            
-        
+        return (classification_scores, proportion_scores)
 
-        # # useful for plotting
-        # if isinstance(self.graph, Grid):
-        #     dim = self.graph.dim
-
-        # # plot, print, and log network parameters and targets.
-        # if self.args.plot:
-        #     self.plot(iteration='Target', plots_dir=self.args.plots_dir)
-
-        # if self.args.print_values:
-        #     print("\niterations:", self.args.n_iter)
-        #     print("\nlamdas:", self.args.lamdas[0], self.args.lamdas[1], self.args.lamdas[2])
-        #     print("\nweights:", self.args.weights)
-        #     print("\ntarget vertices:\n", self.graph.vertices.reshape(dim, dim) if isinstance(self.graph, Grid) else self.graph.vertices)
-        #     print("\ntarget area proportions:\n", self.proportion_targets)
-        #     print("\nareas:\n", self.graph.areas.reshape(dim, dim) if isinstance(self.graph, Grid) else self.graph.areas)
-
-            
-        # if self.args.log_file:
-        #     self.log_to_file(self.args.log_file,
-        #                      iterations=[self.args.n_iter],
-        #                      lamdas=[self.args.lamdas[0], self.args.lamdas[1], self.args.lamdas[2]],
-        #                      iteration=["target"],
-        #                      target_vertices=self.graph.vertices.reshape(dim, dim) if
-        #                      isinstance(self.graph, Grid) else self.graph.vertices,
-        #                      target_area_proportions=self.proportion_targets,
-        #                      areas=self.graph.areas.reshape(dim, dim) if
-        #                      isinstance(self.graph, Grid) else self.graph.areas,
-        #                      weights=self.args.weights,
-        #                      )
-
-
-        
-
-            # # plot, print, and log iterations
-            # if iteration % self.args.plot_print_and_log_after == 0:
-            #     if self.args.plot:
-            #         self.plot(iteration=iteration , plots_dir=self.args.plots_dir)
-
-            #     if self.args.print_values:
-            #         print("\niteration:", iteration)
-            #         print("\nvertices:\n", self.graph.vertices.reshape(dim, dim) if isinstance(self.graph, Grid) else self.graph.vertices)
-            #         print("\nmean_vih:\n", self.calc_mean_vih(columns, multipliers, counts).reshape(dim, dim)
-            #         if isinstance(self.graph, Grid) else self.calc_mean_vih(columns, multipliers, counts))
-            #         print("\ng1 derivative:\n", g1_derivative.reshape(dim, dim) if isinstance(self.graph, Grid) else g1_derivative)
-            #         print("\ng2 derivative:\n", g2_derivative.reshape(dim, dim) if isinstance(self.graph, Grid) else g2_derivative)
-            #         print("\narea proportions:\n", self.calc_area_proportions(self.args.lamdas[2]))
-            #         print("\narea proportion derivative:\n", area_proportion_derivative.reshape(dim, dim) if isinstance(self.graph, Grid) else area_proportion_derivative)
-            #         print("\nenergy derivative:\n", energy_derivative.reshape(dim, dim) if isinstance(self.graph, Grid) else energy_derivative)
-
-            #     # Logging
-            #     if self.args.log_file:
-            #         self.log_to_file(self.args.log_file,
-            #                          iteration=[iteration],
-            #                          vertices=self.graph.vertices.reshape(dim, dim) if
-            #                          isinstance(self.graph, Grid) else self.graph.vertices,
-            #                          g1_derivative=g1_derivative.reshape(dim, dim),
-            #                          g2_derivative=g2_derivative.reshape(dim, dim),
-            #                          area_proportions=self.calc_area_proportions(self.args.lamdas[2]),
-            #                          area_proportion_derivative=area_proportion_derivative.reshape(
-            #                              dim, dim)
-            #                          if isinstance(self.graph, Grid) else area_proportion_derivative,
-            #                          energy_derivative=energy_derivative.reshape(
-            #                              dim, dim)
-            #                          if isinstance(self.graph, Grid) else energy_derivative,
-            #                          )
-
-
-        # # plot, print, and log final result
-
-        # if self.args.plot:
-        #     self.plot(iteration='Result'  , plots_dir=self.args.plots_dir)
-
-        # if self.args.print_values:
-        #     print("\niteration:", "result")
-        #     print("\nvertices:\n", self.graph.vertices.reshape(dim, dim) if isinstance(self.graph, Grid) else self.graph.vertices)
-        #     print("\narea_proportions:\n", self.calc_area_proportions(self.args.lamdas[2]))
-
-        # if self.args.log_file:
-        #     self.log_to_file(self.args.log_file,
-        #                      iteration=["result"],
-        #                      vertices=self.graph.vertices.reshape(dim, dim) if
-        #                      isinstance(self.graph, Grid) else self.graph.vertices,
-        #                      area_proportions = self.calc_area_proportions(self.args.lamdas[2])
-        #                      )
-
-    def log_to_file(self, log_file, **kwargs): 
-        #rewrite to match results with additional columns for keys that have a value for each vertex, 
-        # the remaining keys being stored in a config file along with self.args
-        for key, value in kwargs.items():
-            pd.DataFrame(['', key]).to_csv(log_file, mode='a', header=False, index=False)
-            pd.DataFrame(value).to_csv(log_file, mode='a', header=False, index=False, na_rep='nan')
-
-    def plot(self, iteration, plots_dir=None):
-        if isinstance(self.graph, Grid):
-            f, ax = plt.subplots()
-            lines = [self.graph.zoom_factor * i for i in range(1, int(self.graph.dim/self.graph.zoom_factor) + 1)]
-            ax.hlines(lines, xmin=0, xmax=self.graph.dim)
-            ax.vlines(lines, ymin=0, ymax=self.graph.dim)
-            sns.heatmap(self.graph.vertices.reshape(self.graph.dim, self.graph.dim),
-                        cmap='Greys', cbar=True, vmax=1, vmin=0)
-            plt.show()
-        else:
-            raise NotImplementedError("Plotting for graphs is not implemeted. \
-                                      Please use log_to_file instead and use GIS software to plot the results")
-            # if plots_dir is None:
-            #     pd.DataFrame(np.vstack((self.graph.vertices.reshape(1, -1), self.graph.coordinates.T)).T).to_csv(f'iteration: {iteration}.csv')
-            # else:
-            #     pd.DataFrame(np.vstack((self.graph.vertices.reshape(1, -1), self.graph.coordinates.T)).T).to_csv(f'{plots_dir}/iteration: {iteration}.csv')
+    # def plot(self, iteration, plots_dir=None):
+    #     if isinstance(self.graph, Grid):
+    #         f, ax = plt.subplots()
+    #         lines = [self.graph.zoom_factor * i for i in range(1, int(self.graph.dim/self.graph.zoom_factor) + 1)]
+    #         ax.hlines(lines, xmin=0, xmax=self.graph.dim)
+    #         ax.vlines(lines, ymin=0, ymax=self.graph.dim)
+    #         sns.heatmap(self.graph.vertices.reshape(self.graph.dim, self.graph.dim),
+    #                     cmap='Greys', cbar=True, vmax=1, vmin=0)
+    #         plt.show()
+    #     else:
+    #         raise NotImplementedError("Plotting for graphs is not implemeted. \
+    #                                   Please use log_to_file instead and use GIS software to plot the results")
 
     def set_proportion_targets(self):
         predictions = (self.graph.vertices >= 0.5).astype(int)

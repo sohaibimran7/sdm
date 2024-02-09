@@ -3,3 +3,4 @@ data
 .lightning_studio
 .vscode
 sdm/__pycache__
+wandb
