@@ -1,4 +1,4 @@
-# Code for Spatial disaggregation of asset type for hazard risk assessment using a lattice-based Hopfield Neural Network"
+# Code for "Spatial disaggregation of asset type for hazard risk assessment using a lattice-based Hopfield Neural Network"
 
 Run experiments/hnn_val.py and experiments/rand_dis.py for HNN validation. The results will be stored in the results directory. Use scripts/plotting.py with FLOODMAP_EVALS = False to plot the results. 
 
