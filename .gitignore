@@ -1,7 +1,12 @@
 *.egg-info
 data
+!data/lancaster/processed
 .lightning_studio
 .vscode
 sdm/__pycache__
+sdm/wandb-sweeps.py
 wandb
 .DS_Store
+results
+figures
+scripts/preprocessing

@@ -1,22 +1,18 @@
 import numpy as np
 from scipy.spatial import Delaunay
+from scipy.sparse import lil_matrix, csr_matrix
 
-
-def chebyshev(edges, dim: float):
+def chebyshev(edges: lil_matrix, dim: float) -> csr_matrix:
     """
-    Given a (empty) adjacency matrix, and a dim, stores 1 in all elements of the Cth row of the matrix that
-    would be neighbouring C if the row was reshaped to a square grid.
+    Given an empty adjacency matrix and the dimension of the matrix, returns the adjacency matrix representing the chebyshev neighbours of each cell.
 
-    Parameters
-    ----------
-    edges:          array_like of shape (dim**2, dim**2)
-    dim         :   int containing the grid's dimensions (also equivalent to sqrt(edges.shape(0)))
+    Parameters:
+    edges (lil_matrix): An empty adjacency matrix.
+    dim (float): The dimension of the matrix.
 
-    Returns
-    -------
-    array_like of shape (dim**2, dim**2)
+    Returns:
+    lil_matrix: The adjacency matrix representing the chebyshev neighbours of each cell.
     """
-
     for centre in range(edges.shape[0]):
 
         centre_row = centre // dim
@@ -70,10 +66,10 @@ def chebyshev(edges, dim: float):
         if centre_col + 1 < dim:
             edges[centre, centre + 1] = 1
 
-    return edges
+    return edges.tocsr()
 
 
-def delaunay(edges, coordinates):
+def delaunay(edges : lil_matrix, coordinates : np.ndarray) -> csr_matrix:
     """
     Given a (empty) adjacency matrix and a matrix of co-ordinates, finds the delaunay neighbours
     of of all coordinates and stores them in the adjaceny matrix.
@@ -96,23 +92,25 @@ def delaunay(edges, coordinates):
         edges[simplex[2], simplex[0]] = 1
         edges[simplex[2], simplex[1]] = 1
 
-    return edges
+    return edges.tocsr()
+    
+def adjust_duplicates(coords, decimal_places=4, max_noise=1e-3, verbose=True):
+    new_coords = coords.copy()
+    i = 0
+    while True:
+        rounded_coords = np.round(new_coords, decimal_places)
+        _, indices, counts = np.unique(rounded_coords, axis=0, return_inverse=True, return_counts=True)
+        duplicate_mask = counts[indices] > 1
 
+        if verbose:
+            print(f"Iteration {i}: {np.sum(duplicate_mask)} duplicates found")
 
-class NeighboursTraverser:
-    def __init__(self):
-        self.nearest_neighbours = np.array([])
+        if not np.any(duplicate_mask):
+            break
 
-    def traverse_neighbours(self, edges, lag):
-        # Check to see if there are any non-zero values other than principle axis.
-        # nnz + edges.shape[0] == edges.shape[0]*edges.shape[1]?
+        # Apply noise only to duplicates
+        noise = np.random.uniform(-max_noise, max_noise, new_coords.shape)
+        new_coords[duplicate_mask] += noise[duplicate_mask]
+        i += 1
 
-        if self.nearest_neighbours.size == 0:
-            self.nearest_neighbours = edges
-
-        new = self.nearest_neighbours.__pow__(lag)
-        new.setdiag(0)
-        new[new != 0] = lag
-        mask = (edges != 0)
-        new[mask] = edges[mask]
-        return new
+    return new_coords
