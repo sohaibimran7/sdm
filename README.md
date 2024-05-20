@@ -1,4 +1,4 @@
-# Code for "Spatial disaggregation of asset type for hazard risk assessment using a Hopfield Neural Network"
+# Code for [Paper name hidden for double blind review]"
 
 Run experiments/hnn_val.py and experiments/rand_dis.py for HNN validation. The results will be stored in the results directory. Use scripts/plotting.py with FLOODMAP_EVALS = False to plot the results. 
 
