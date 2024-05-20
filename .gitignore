@@ -1,6 +1,10 @@
 *.egg-info
 data
-!data/lancaster/processed
+!data/
+data/*
+!data/lancaster/
+data/lancaster/*
+!data/lancaster/processed/
 .lightning_studio
 .vscode
 sdm/__pycache__
