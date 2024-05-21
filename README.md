@@ -1,4 +1,4 @@
-# Code for "Spatial disaggregation of asset type for hazard risk assessment using a lattice-based Hopfield Neural Network"
+# Code for [paper name hidden for double blind peer review]
 
 To install the package and dependencies, run:
 ``` 
