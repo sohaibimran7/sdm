@@ -1,7 +1,6 @@
 # %%
 import pandas as pd
 import numpy as np
-import os, json
 from dataclasses import dataclass, asdict
 from sdm.graph import Graph
 from sdm.hnn import HopfieldNetwork
@@ -10,6 +9,9 @@ from typing import Sequence
 from tqdm import tqdm
 import warnings
 import geopandas as gpd
+from sdm.kNN import kNN
+import os
+import json
 
 #%%
 warnings.simplefilter(action='ignore', category=pd.errors.PerformanceWarning)
@@ -25,7 +27,6 @@ class RunArgs():
     output_dir : str = 'results/lancaster'
     initialisation : str = 'like_proportions_train_adjusted'
     n_runs : int = 100
-    use_hnn : bool = False
     classification_metrics : Sequence[str] = ('accuracy_score', 'balanced_accuracy_score', 'precision_score', 'recall_score', 'f1_score', 'cohen_kappa_score', 'matthews_corrcoef', 'confusion_matrix')
     proportion_metrics : Sequence[str]= ('mean_absolute_error', 'median_absolute_error', 'max_error')
     filter_to_aoi : bool = False
@@ -36,7 +37,6 @@ class RunArgs():
 
 @dataclass
 class HNNArgs(RunArgs):
-    use_hnn : bool = True
     initial_high_val : int = 0.55
     initial_low_val : int = 0.45
     n_iter : int = 200
@@ -48,6 +48,12 @@ class HNNArgs(RunArgs):
     stopping_threshold : float = 0.0
     log_to_wandb : bool = False
     log_every_n_iters : int = 10
+
+@dataclass
+class KNNArgs(RunArgs):
+    k: int = 5
+    train_prop: float = 0.2
+    cross_validation: bool = False
 
 def run(args):
     def initialise(high_val, low_val):
@@ -96,6 +102,27 @@ def run(args):
         # inplace update of points_data
         points_data[f'predicted_{i+1}'] = hnn.graph.vertices
 
+    def run_knn(graph, i: int):
+        train = points_data[f'sampled_to_train_{i+1}'].to_numpy()
+        points_data[f'train_{i+1}'] = train
+
+        # inplace reset of graph attributes
+        graph.reset(vertices=np.zeros_like(train), unupdatable=~np.isnan(train))
+
+        # create new kNN object for each iteration
+        knn_model = kNN(
+            args=args,
+            graph=graph,
+            proportion_targets=proportions,
+            labels=points_data['label'].to_numpy(),
+        )
+
+        classification_scores, proportion_scores = knn_model.predict()
+        multirun_classification_and_proportion_scores.append((classification_scores, proportion_scores))
+
+        # inplace update of points_data
+        points_data[f'predicted_{i+1}'] = knn_model.graph.vertices
+
     # Main function body
     
 
@@ -118,8 +145,41 @@ def run(args):
 
     # if args.hnn is True, multirun_classification_and_proportion_scores will be populated inside the run_hnn closure
     multirun_classification_and_proportion_scores = []
+    
+    if isinstance(args, KNNArgs):
+        # create graph
+        graph = Graph(
+            vertices=np.zeros_like(points_data['label'].to_numpy()),
+            coordinates=points_data[["latitude", "longitude"]].to_numpy(),
+            areas=points_data["area_num"].to_numpy(dtype=int),
+        )
 
-    if args.use_hnn:
+        labels_df_nonan = points_data[["point_id", "label"]].dropna()
+
+        if args.cross_validation:
+            arkfold = AdaptiveRepeatedKFold(args.n_runs, args.train_prop)
+            
+            pbar = tqdm(total=args.n_runs, desc=args.run_name, leave=False)
+
+            for i, split in enumerate(arkfold.split(labels_df_nonan["label"].to_numpy())):
+                points_data = points_data.merge(labels_df_nonan.iloc[split[0]]
+                                .rename(columns={'label':f'sampled_to_train_{i+1}'})
+                                    , on='point_id', how='left')
+                
+                run_knn(graph=graph, i=i)
+                pbar.update(1)
+            pbar.close()
+
+        else:
+            for i in tqdm(range(args.n_runs), desc=args.run_name, leave=False):
+                points_data = points_data.merge(labels_df_nonan
+                                .sample(frac=args.train_prop)
+                                .rename(columns={"label":f"sampled_to_train_{i+1}"})
+                                , on='point_id', how='left')
+                
+                run_knn(graph=graph, i=i)
+            
+    elif isinstance(args, HNNArgs):
 
         # create graph
         graph=Graph(
@@ -160,7 +220,7 @@ def run(args):
                 run_hnn(graph=graph, i=i)
     else:
         for i in tqdm(range(args.n_runs), desc=args.run_name):
-            predictions = initialise(high_val=1, low_val=0)
+            predictions, _ = initialise(high_val=1, low_val=0)
             points_data[f'predicted_{i+1}'] = predictions
             classification_scores, proportion_scores = compute_metrics(labels=points_data['label'],
                                                                        predictions=predictions,
@@ -204,21 +264,65 @@ def run(args):
 
 #%%
 if __name__ == "__main__":
-    points_data, multirun_classification_and_proportion_scores = run(
-        HNNArgs(
-            run_name='example',
-            n_runs=1,
-            use_hnn=True,
-            n_iter=20,
-            train_prop=0.95,
-            initialisation='like_proportions_train_adjusted',
-            cross_validation=False,
-            alpha=0.9,
-            stopping_threshold=0,
-            dt = 1,
-            log_to_wandb=False,
-            save_results=False,
-            )
-        )
 
+    # Load the predictions CSV
+    predictions_hnn = pd.read_csv('results/lancaster/hnn_alpha-0.1_train-0.2/predictions.csv')
+    predictions_knn = pd.read_csv('results/lancaster/k-1_train-0.2/predictions.csv')
+
+    def calculate_area_stats(df, method_name, run):
+        # Initialize a list to store the results
+        area_results = []
+        
+        # Get unique area IDs
+        unique_areas = df['area_num'].unique()
+
+        # Iterate over each area
+        for area in tqdm(unique_areas, desc=f"Calculating stats for {method_name}"):
+            area_data = df[df['area_num'] == area]
+            
+            # Calculate actual proportions
+            total_points = len(area_data)
+            actual_prop = (area_data['label'] == 1).sum() / total_points * 100
+            
+            # Calculate average predicted proportions across all runs
+            pred_props = []
+            seed_props = []
+
+            predictions = area_data[f'predicted_{run}']
+            pred_prop = (predictions >= 0.5).sum() / total_points * 100
+            pred_props.append(pred_prop)
+            
+            # Get seed/train proportions for this run
+            train_zeros = (area_data[f'sampled_to_train_{run}'] == 0).sum() 
+            train_ones = (area_data[f'sampled_to_train_{run}'] == 1).sum()
+            train_total = train_zeros + train_ones
+            if train_total > 0:
+                seed_prop = train_ones / train_total * 100
+                seed_props.append(seed_prop)
+
+            
+            # Average the proportions
+            avg_pred_prop = np.mean(pred_props)
+            avg_seed_prop = np.mean(seed_props) if seed_props else np.nan
+            
+            # Append the results
+            area_results.append({
+                'Area': area,
+                'Actual %': round(actual_prop, 2),
+                f'{method_name} Predicted %': round(avg_pred_prop, 2),
+                f'{method_name} Seed %': round(avg_seed_prop, 2)
+            })
+
+        return pd.DataFrame(area_results)
+
+    # Calculate stats for both methods
+    hnn_stats = calculate_area_stats(predictions_hnn, 'HNN', run=1)
+    knn_stats = calculate_area_stats(predictions_knn, 'kNN', run=1)
+
+    # Merge the results on the 'Area' column
+    results = pd.merge(hnn_stats, knn_stats, on='Area', suffixes=('_HNN', '_kNN'))
+
+    # Display the results
+    print("\nComparison of Non-residential Percentages by Area:")
+    print(results)
 # %%

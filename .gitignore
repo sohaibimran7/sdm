@@ -15,3 +15,8 @@ wandb
 results
 figures
 scripts/preprocessing
+.env
+logs/
+__pycache__/
+.DS_Store
+*.toml

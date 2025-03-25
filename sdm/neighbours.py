@@ -2,6 +2,7 @@ import numpy as np
 from scipy.spatial import Delaunay
 from scipy.sparse import lil_matrix, csr_matrix
 
+
 def chebyshev(edges: lil_matrix, dim: float) -> csr_matrix:
     """
     Given an empty adjacency matrix and the dimension of the matrix, returns the adjacency matrix representing the chebyshev neighbours of each cell.
@@ -14,7 +15,6 @@ def chebyshev(edges: lil_matrix, dim: float) -> csr_matrix:
     lil_matrix: The adjacency matrix representing the chebyshev neighbours of each cell.
     """
     for centre in range(edges.shape[0]):
-
         centre_row = centre // dim
         centre_col = centre % dim
 
@@ -27,7 +27,7 @@ def chebyshev(edges: lil_matrix, dim: float) -> csr_matrix:
             # |x| | |
             # | |C| |   flatten
             # | | | |   ---->   |x| | | |C| | | | |
-            if centre_col-1 >= 0:
+            if centre_col - 1 >= 0:
                 edges[centre, centre - dim - 1] = 1
 
             # | | |x|
@@ -69,7 +69,7 @@ def chebyshev(edges: lil_matrix, dim: float) -> csr_matrix:
     return edges.tocsr()
 
 
-def delaunay(edges : lil_matrix, coordinates : np.ndarray) -> csr_matrix:
+def delaunay(edges: lil_matrix, coordinates: np.ndarray) -> csr_matrix:
     """
     Given a (empty) adjacency matrix and a matrix of co-ordinates, finds the delaunay neighbours
     of of all coordinates and stores them in the adjaceny matrix.
@@ -93,13 +93,21 @@ def delaunay(edges : lil_matrix, coordinates : np.ndarray) -> csr_matrix:
         edges[simplex[2], simplex[1]] = 1
 
     return edges.tocsr()
-    
-def adjust_duplicates(coords, decimal_places=4, max_noise=1e-3, verbose=True):
+
+
+def adjust_duplicates(
+    coords: np.ndarray,
+    decimal_places: int = 4,
+    max_noise: float = 1e-3,
+    verbose: bool = True,
+) -> np.ndarray:
     new_coords = coords.copy()
     i = 0
     while True:
         rounded_coords = np.round(new_coords, decimal_places)
-        _, indices, counts = np.unique(rounded_coords, axis=0, return_inverse=True, return_counts=True)
+        _, indices, counts = np.unique(
+            rounded_coords, axis=0, return_inverse=True, return_counts=True
+        )
         duplicate_mask = counts[indices] > 1
 
         if verbose:

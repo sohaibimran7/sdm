@@ -4,7 +4,7 @@ import numpy as np
 import seaborn as sns
 import matplotlib.pyplot as plt
 from sdm.utils import compute_metrics, get_proportions
-import wandb
+# import wandb
 
 class HopfieldNetwork:
     def __init__(self, args, graph: Graph, proportion_targets=None, labels=None):
@@ -15,10 +15,10 @@ class HopfieldNetwork:
         self.labels = labels
         self.proportion_targets = proportion_targets
 
-        if self.args.log_to_wandb:
-            wandb.init(project=self.args.project_name, name=self.args.run_name)
-            wandb.define_metric("iteration")
-            wandb.define_metric("*", step_metric="iteration")
+        # if self.args.log_to_wandb:
+        #     wandb.init(project=self.args.project_name, name=self.args.run_name)
+        #     wandb.define_metric("iteration")
+        #     wandb.define_metric("*", step_metric="iteration")
 
     def evaluation_step(self, iteration, energy_derivative=None) -> tuple:
         predictions = (self.graph.vertices >= 0.5).astype(int)
@@ -33,11 +33,11 @@ class HopfieldNetwork:
                                                                     proportion_metrics=self.args.proportion_metrics, 
                                                                     unupdatable=self.graph.unupdatable)
         
-        if self.args.log_to_wandb:
-            wandb.log({"iteration": iteration})
-            wandb.log({"energy_derivative": energy_derivative})
-            wandb.log(classification_scores)
-            wandb.log(proportion_scores)
+        # if self.args.log_to_wandb:
+        #     wandb.log({"iteration": iteration})
+        #     wandb.log({"energy_derivative": energy_derivative})
+        #     wandb.log(classification_scores)
+        #     wandb.log(proportion_scores)
 
         return classification_scores, proportion_scores
     
@@ -62,12 +62,11 @@ class HopfieldNetwork:
 
     def predict(self) -> tuple:
         for iteration in range(self.args.n_iter):
-
-            if self.args.log_to_wandb and (iteration % self.args.log_every_n_iters == 0):
-                if iteration == 0:
-                    self.evaluation_step(iteration=iteration)
-                else:
-                    self.evaluation_step(iteration=iteration, energy_derivative=energy_derivative)
+            # if self.args.log_to_wandb and (iteration % self.args.log_every_n_iters == 0):
+            #     if iteration == 0:
+            #         self.evaluation_step(iteration=iteration)
+            #     else:
+            #         self.evaluation_step(iteration=iteration, energy_derivative=energy_derivative)
 
             energy_derivative = self.prediction_step()
             if energy_derivative < self.args.stopping_threshold:
@@ -75,7 +74,7 @@ class HopfieldNetwork:
 
         self.graph.vertices = (self.graph.vertices >= 0.5).astype(int)
         classification_scores, proportion_scores = self.evaluation_step(iteration=iteration, energy_derivative=energy_derivative)
-        if self.args.log_to_wandb:  wandb.finish()
+        # if self.args.log_to_wandb:  wandb.finish()
         return classification_scores, proportion_scores, energy_derivative, iteration + 1
 
     def plot(self, iteration) -> None:

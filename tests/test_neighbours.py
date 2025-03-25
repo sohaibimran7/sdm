@@ -1,7 +1,7 @@
 #%%
 import numpy as np
-from scipy.sparse import lil_matrix
-from sdm.neighbours import chebyshev, adjust_duplicates
+from scipy.sparse import lil_matrix, csr_matrix
+from sdm.neighbours import chebyshev, adjust_duplicates, delaunay
 
 def test_chebyshev():
     # Test case 1: 3x3 matrix
@@ -60,4 +60,39 @@ def test_adjust_duplicates():
     assert np.array_equal(result2[:7], coords2[:7]), "Expected result should be the same for non-duplicate coordinates"
     assert not np.array_equal(result2[7:], coords2[7:]), "Expected result should be different for duplicate coordinates"
 test_adjust_duplicates()
+# %%
+def test_delaunay():
+    # Test case 1: 3 points
+    edges = lil_matrix((3, 3))
+    coordinates = np.array([
+        [0., 0.],
+        [1., 0.],
+        [0., 1.]
+    ])
+    result = delaunay(edges, coordinates)
+    expected_result = np.array([
+        [0, 1, 1],
+        [1, 0, 1],
+        [1, 1, 0]
+    ])
+    assert np.array_equal(result.toarray().astype(int), expected_result), "function delaunay is not working as expected"
+
+    # Test case 2: 4 points
+    edges = lil_matrix((4, 4))
+    coordinates = np.array([
+        [0., 0.],
+        [1., 0.],
+        [0., 1.],
+        [1., 1.]
+    ])
+    result = delaunay(edges, coordinates)
+    expected_result = np.array([
+        [0, 1, 1, 0],
+        [1, 0, 1, 1],
+        [1, 1, 0, 1],
+        [0, 1, 1, 0]
+    ])
+    assert np.array_equal(result.toarray().astype(int), expected_result), "function delaunay is not working as expected"
+
+test_delaunay()
 # %%
